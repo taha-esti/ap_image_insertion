@@ -1,53 +1,21 @@
 """
-This script does the reverse of the AP image extraction script.
+Reverse of the AP image extraction script.
 
-It will:
-  - Read AP images from an "AP-Images" folder structured as:
-        AP-Images/
-          <FloorName>/
-            AP1.png
-            AP1-1.png
-            AP1-2.png
-            AP2.png
-            ...
-    (i.e., Folder format A: images directly in floor folders)
+Reads AP images from:
+    AP-Images/<FloorName>/APName.png
+    AP-Images/<FloorName>/APName-1.png
+    AP-Images/<FloorName>/APName-2.png
+(Format A, images directly in floor folders.)
 
-  - Open an Ekahau project file (.esx), which is a ZIP archive.
-  - Extract it into a temporary directory.
-  - Load:
-        - accessPoints.json
-        - floorPlans.json
-        - notes.json
-  - For each image file:
-        - Match floor by folder name.
-        - Match AP by file name (e.g., "AP1.png" → AP name "AP1";
-          "AP1-2.png" → AP name "AP1").
-        - Find the corresponding AP object on that floor.
-        - Attach all images for that AP and floor to a SINGLE note
-          (Rule B: one note with multiple images):
-            - If AP already has at least one note:
-                - Use the first note, extend its "imageIds" list.
-            - If AP has no notes:
-                - Clone the structure of the first existing note (if any),
-                  or create a minimal new note.
-                - Attach that new note to the AP.
-
-  - Insert the image data into the project folder as files:
-        image-<imageId>
-    (no extension, as used by Ekahau internally)
-  - Update notes.json and accessPoints.json.
-  - Repack the directory into a new .esx file (backing up the original).
+For each AP on that floor:
+  - Ensures the AP has ONE note (Rule B: a single note per AP).
+  - Attaches all those images to that note (note['imageIds']).
+  - Writes image data into files named: image-<uuid>
+  - Adds metadata for each image into images.json
 
 Usage:
     python insert_ap_images.py project.esx
     python insert_ap_images.py project.esx --images-dir AP-Images --inplace
-
-Notes:
-    - This script assumes that floor names in AP-Images/<FloorName>
-      match the "name" field in floorPlans.json.
-    - Image files are assumed to be PNGs, but the raw bytes are copied
-      as-is; Ekahau only cares about the "image-<id>" file content,
-      regardless of extension.
 """
 
 import argparse
@@ -73,7 +41,6 @@ def extract_project(esx_file, extract_dir):
         zf.extractall(extract_dir)
 
 def repack_project(extract_dir, output_esx):
-    # Create zip from folder
     with zipfile.ZipFile(output_esx, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, _, files in os.walk(extract_dir):
             for name in files:
@@ -83,13 +50,11 @@ def repack_project(extract_dir, output_esx):
 
 def parse_ap_name_from_filename(filename):
     """
-    From file name like:
-        AP01.png        → "AP01"
-        AP01-1.png      → "AP01"
-        AP with spaces-2.png → "AP with spaces"
+    AP01.png       -> AP01
+    AP01-1.png     -> AP01
+    AP with spaces-2.png -> AP with spaces
     """
     base, _ = os.path.splitext(filename)
-    # Strip a trailing "-digits" part if present
     m = re.match(r"^(.*?)(?:-\d+)?$", base)
     if m:
         return m.group(1)
@@ -105,7 +70,7 @@ def build_floor_name_to_id(floorPlans):
 
 def build_ap_index(accessPoints):
     """
-    Build an index of (floorPlanId, apName) -> AP dict
+    (floorPlanId, apName) -> AP dict
     """
     index = {}
     for ap in accessPoints.get("accessPoints", []):
@@ -118,7 +83,7 @@ def build_ap_index(accessPoints):
 
 def build_note_index(notes):
     """
-    Build an index of noteId -> note dict
+    noteId -> note dict
     """
     idx = {}
     for n in notes.get("notes", []):
@@ -129,46 +94,31 @@ def build_note_index(notes):
 
 def find_or_create_note_for_ap(ap, notes_data, note_index):
     """
-    Ensure the AP has (at least) one note and return that note.
-    Rule B: use a SINGLE note per AP and attach multiple images there.
-
-    Strategy:
-        - If AP has noteIds:
-            - Use the first one and return that note.
-        - Else:
-            - If notes_data has at least one note: clone structure of the first.
-            - Else: create a minimal new note.
-            - Attach new note to AP.noteIds and add to notes_data & note_index.
+    Rule B: one note per AP, multiple images in that note.
     """
-    # Ensure ap has noteIds list key
     note_ids = ap.get("noteIds")
     if note_ids is None:
         note_ids = []
         ap["noteIds"] = note_ids
 
     if note_ids:
-        # Use existing first note
         first_id = note_ids[0]
         note = note_index.get(first_id)
         if note is None:
-            # Weird case: id listed but note missing; create a fresh note
             new_id = str(uuid.uuid4())
             note = {"id": new_id, "imageIds": []}
-            notes_data["notes"].append(note)
+            notes_data.setdefault("notes", []).append(note)
             note_index[new_id] = note
             note_ids[0] = new_id
-        # Ensure imageIds key exists
         note.setdefault("imageIds", [])
         return note
 
-    # No notes for this AP yet, create one
+    # Create a new note if none exist for this AP
     new_id = str(uuid.uuid4())
 
     if notes_data.get("notes"):
-        # Clone structure of first existing note as template
         template = notes_data["notes"][0]
-        note = json.loads(json.dumps(template))  # deep copy
-        # Overwrite ID and wipe text/content fields, but keep other structure
+        note = json.loads(json.dumps(template))
         note["id"] = new_id
         if "text" in note:
             note["text"] = ""
@@ -176,10 +126,11 @@ def find_or_create_note_for_ap(ap, notes_data, note_index):
             note["title"] = ""
         note["imageIds"] = []
     else:
-        # Minimal note structure
         note = {
             "id": new_id,
-            "imageIds": []
+            "text": "",
+            "imageIds": [],
+            "status": "ACTIVE"
         }
 
     notes_data.setdefault("notes", []).append(note)
@@ -190,11 +141,9 @@ def find_or_create_note_for_ap(ap, notes_data, note_index):
 
 def collect_images(images_root, floor_name_to_id):
     """
-    Scan AP-Images/ folder and return a structure:
-        {
-            (floorPlanId, apName): [ list of image file full paths (sorted) ]
-        }
-    Only floors that match a floor name in floorPlans.json are used.
+    Return:
+       { (floorPlanId, apName): [list of full image paths (sorted)] }
+    Only floors that match floorPlans.json names are used.
     """
     mapping = {}
     if not os.path.isdir(images_root):
@@ -215,7 +164,6 @@ def collect_images(images_root, floor_name_to_id):
             if not os.path.isfile(full):
                 continue
 
-            # Only consider common image extensions (png/jpg/jpeg)
             ext = os.path.splitext(fname)[1].lower()
             if ext not in [".png", ".jpg", ".jpeg"]:
                 continue
@@ -225,6 +173,54 @@ def collect_images(images_root, floor_name_to_id):
             mapping.setdefault(key, []).append(full)
 
     return mapping
+
+# NEW: helper to add entries into images.json
+def init_images_data(images_path):
+    if os.path.isfile(images_path):
+        data = load_json(images_path)
+        # Try to normalize common structure
+        if "images" not in data:
+            # If the root is already a list, wrap it
+            if isinstance(data, list):
+                data = {"images": data}
+            else:
+                data["images"] = data.get("images", [])
+    else:
+        data = {"images": []}
+    return data
+
+def add_image_metadata(images_data, img_id, img_path):
+    """
+    Add a new image entry to images.json structure.
+
+    We:
+      - Try to clone the first existing entry as a template if present.
+      - Otherwise, create a minimal new entry.
+    """
+    ext = os.path.splitext(img_path)[1].lower()
+    if ext.startswith("."):
+        ext = ext[1:]
+    image_format = ext.upper() if ext else "PNG"
+
+    images_list = images_data.setdefault("images", [])
+
+    if images_list:
+        # Clone first entry as template
+        template = images_list[0]
+        entry = json.loads(json.dumps(template))
+        entry["id"] = img_id
+        entry["imageFormat"] = image_format
+        entry["status"] = template.get("status", "ACTIVE")
+        # If resolutionWidth/Height exist in template, leave them as-is
+    else:
+        # Minimal entry if there were no existing images
+        entry = {
+            "id": img_id,
+            "imageFormat": image_format,
+            "status": "ACTIVE"
+        }
+
+    images_list.append(entry)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -264,10 +260,11 @@ def main():
     else:
         extract_project(esx_path, extract_dir)
 
-    # Load JSON files from extracted project
+    # JSON paths
     access_points_path = os.path.join(extract_dir, "accessPoints.json")
     floor_plans_path = os.path.join(extract_dir, "floorPlans.json")
     notes_path = os.path.join(extract_dir, "notes.json")
+    images_json_path = os.path.join(extract_dir, "images.json")  # NEW
 
     if not os.path.isfile(access_points_path):
         raise FileNotFoundError(f"accessPoints.json not found in {extract_dir}")
@@ -279,6 +276,7 @@ def main():
     accessPoints = load_json(access_points_path)
     floorPlans = load_json(floor_plans_path)
     notes = load_json(notes_path)
+    images_data = init_images_data(images_json_path)  # NEW
 
     floor_name_to_id = build_floor_name_to_id(floorPlans)
     ap_index = build_ap_index(accessPoints)
@@ -293,14 +291,12 @@ def main():
 
     print(f"** Found {len(ap_images)} APs with images.")
 
-    # Insert images into project
     inserted_count = 0
     skipped_count = 0
 
     for (floor_id, ap_name), image_files in ap_images.items():
         ap = ap_index.get((floor_id, ap_name))
         if not ap:
-            # No AP with this name on that floor
             print(f"WARNING: No AP named '{ap_name}' on floor id '{floor_id}', skipping its images.")
             skipped_count += len(image_files)
             continue
@@ -310,15 +306,18 @@ def main():
         image_ids = note["imageIds"]
 
         for img_path in image_files:
-            # Generate a new image ID, create image-<id> file in project root
             img_id = str(uuid.uuid4())
             image_ids.append(img_id)
 
             dest_filename = f"image-{img_id}"
             dest_full_path = os.path.join(extract_dir, dest_filename)
 
+            # Write raw image file into project root
             with open(img_path, "rb") as src_f, open(dest_full_path, "wb") as dst_f:
                 dst_f.write(src_f.read())
+
+            # Add metadata entry into images.json
+            add_image_metadata(images_data, img_id, img_path)
 
             inserted_count += 1
 
@@ -327,8 +326,9 @@ def main():
     # Save modified JSON files
     save_json(access_points_path, accessPoints)
     save_json(notes_path, notes)
+    save_json(images_json_path, images_data)  # NEW
 
-    # Prepare output ESX path
+    # Output ESX
     if args.inplace:
         backup_path = esx_path + ".bak"
         print(f"** Creating backup of original project: {backup_path}")
@@ -340,7 +340,6 @@ def main():
     print(f"** Repacking project into: {output_esx}")
     repack_project(extract_dir, output_esx)
 
-    # Cleanup
     if not args.keep_temp:
         print(f"** Cleaning up temporary directory: {extract_dir}")
         shutil.rmtree(extract_dir, ignore_errors=True)
