@@ -1,3 +1,8 @@
 /AP-images/
 *.esx
 /NSH/
+.env
+.venv
+venv/
+__pycache__/
+*.pyc
