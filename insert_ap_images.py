@@ -5,13 +5,16 @@ Reads AP images from:
     AP-Images/<FloorName>/APName.png
     AP-Images/<FloorName>/APName-1.png
     AP-Images/<FloorName>/APName-2.png
-(Format A, images directly in floor folders.)
+(Format A: images directly in floor folders.)
 
 For each AP on that floor:
-  - Ensures the AP has ONE note (Rule B: a single note per AP).
-  - Attaches all those images to that note (note['imageIds']).
+  - Creates ONE NEW NOTE PER IMAGE (Rule A).
+  - Each new note has exactly one imageId.
+  - Adds the new note's ID to the AP's noteIds list.
   - Writes image data into files named: image-<uuid>
   - Adds metadata for each image into images.json
+
+Existing notes for the AP are left untouched.
 
 Usage:
     python insert_ap_images.py project.esx
@@ -50,8 +53,8 @@ def repack_project(extract_dir, output_esx):
 
 def parse_ap_name_from_filename(filename):
     """
-    AP01.png       -> AP01
-    AP01-1.png     -> AP01
+    AP01.png             -> AP01
+    AP01-1.png           -> AP01
     AP with spaces-2.png -> AP with spaces
     """
     base, _ = os.path.splitext(filename)
@@ -92,53 +95,6 @@ def build_note_index(notes):
             idx[nid] = n
     return idx
 
-def find_or_create_note_for_ap(ap, notes_data, note_index):
-    """
-    Rule B: one note per AP, multiple images in that note.
-    """
-    note_ids = ap.get("noteIds")
-    if note_ids is None:
-        note_ids = []
-        ap["noteIds"] = note_ids
-
-    if note_ids:
-        first_id = note_ids[0]
-        note = note_index.get(first_id)
-        if note is None:
-            new_id = str(uuid.uuid4())
-            note = {"id": new_id, "imageIds": []}
-            notes_data.setdefault("notes", []).append(note)
-            note_index[new_id] = note
-            note_ids[0] = new_id
-        note.setdefault("imageIds", [])
-        return note
-
-    # Create a new note if none exist for this AP
-    new_id = str(uuid.uuid4())
-
-    if notes_data.get("notes"):
-        template = notes_data["notes"][0]
-        note = json.loads(json.dumps(template))
-        note["id"] = new_id
-        if "text" in note:
-            note["text"] = ""
-        if "title" in note:
-            note["title"] = ""
-        note["imageIds"] = []
-    else:
-        note = {
-            "id": new_id,
-            "text": "",
-            "imageIds": [],
-            "status": "ACTIVE"
-        }
-
-    notes_data.setdefault("notes", []).append(note)
-    note_index[new_id] = note
-    note_ids.append(new_id)
-
-    return note
-
 def collect_images(images_root, floor_name_to_id):
     """
     Return:
@@ -174,13 +130,19 @@ def collect_images(images_root, floor_name_to_id):
 
     return mapping
 
-# NEW: helper to add entries into images.json
+# --- images.json helpers -----------------------------------------------------
+
 def init_images_data(images_path):
+    """
+    Ensure we have a dict with an "images" list in it.
+    Handles:
+      - existing images.json with {"images": [...]}
+      - existing images.json that is just a list
+      - missing file (start fresh)
+    """
     if os.path.isfile(images_path):
         data = load_json(images_path)
-        # Try to normalize common structure
         if "images" not in data:
-            # If the root is already a list, wrap it
             if isinstance(data, list):
                 data = {"images": data}
             else:
@@ -194,8 +156,9 @@ def add_image_metadata(images_data, img_id, img_path):
     Add a new image entry to images.json structure.
 
     We:
-      - Try to clone the first existing entry as a template if present.
-      - Otherwise, create a minimal new entry.
+      - Clone the first existing entry as template if present.
+      - Otherwise, create a minimal entry.
+      - Set id, imageFormat, status.
     """
     ext = os.path.splitext(img_path)[1].lower()
     if ext.startswith("."):
@@ -205,27 +168,66 @@ def add_image_metadata(images_data, img_id, img_path):
     images_list = images_data.setdefault("images", [])
 
     if images_list:
-        # Clone first entry as template
         template = images_list[0]
         entry = json.loads(json.dumps(template))
-        entry["id"] = img_id
-        entry["imageFormat"] = image_format
-        entry["status"] = template.get("status", "ACTIVE")
-        # If resolutionWidth/Height exist in template, leave them as-is
     else:
-        # Minimal entry if there were no existing images
-        entry = {
-            "id": img_id,
-            "imageFormat": image_format,
+        entry = {}
+
+    entry["id"] = img_id
+    entry["imageFormat"] = image_format
+    # leave resolutionWidth/Height from template if present, otherwise omit
+    entry["status"] = "CREATED"
+
+    images_list.append(entry)
+
+# --- note creation: ONE NOTE PER IMAGE (RULE A) ------------------------------
+
+def create_new_note_for_ap(ap, notes_data, note_index):
+    """
+    Create a brand new note for this AP and attach it (one image per note).
+
+    We don't touch existing notes; we just append a new noteId.
+    Structure:
+      - If there is at least one existing note in notes_data["notes"],
+        we clone that as a template and wipe text/title/imageIds.
+      - Otherwise, create a minimal note with id/text/imageIds/status.
+    """
+    new_id = str(uuid.uuid4())
+
+    if notes_data.get("notes"):
+        template = notes_data["notes"][0]
+        note = json.loads(json.dumps(template))
+        note["id"] = new_id
+        if "text" in note:
+            note["text"] = ""
+        if "title" in note:
+            note["title"] = ""
+        note["imageIds"] = []
+    else:
+        note = {
+            "id": new_id,
+            "text": "",
+            "imageIds": [],
             "status": "ACTIVE"
         }
 
-    images_list.append(entry)
+    notes_data.setdefault("notes", []).append(note)
+    note_index[new_id] = note
+
+    note_ids = ap.get("noteIds")
+    if note_ids is None:
+        note_ids = []
+        ap["noteIds"] = note_ids
+    note_ids.append(new_id)
+
+    return note
+
+# --- main --------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
         description="Insert AP note images back into an Ekahau .esx project "
-                    "from an AP-Images folder (reverse of extract script)."
+                    "from an AP-Images folder (Rule A: one note per image)."
     )
     parser.add_argument("file", metavar="esx_file", help="Ekahau project file (.esx)")
     parser.add_argument(
@@ -264,7 +266,7 @@ def main():
     access_points_path = os.path.join(extract_dir, "accessPoints.json")
     floor_plans_path = os.path.join(extract_dir, "floorPlans.json")
     notes_path = os.path.join(extract_dir, "notes.json")
-    images_json_path = os.path.join(extract_dir, "images.json")  # NEW
+    images_json_path = os.path.join(extract_dir, "images.json")
 
     if not os.path.isfile(access_points_path):
         raise FileNotFoundError(f"accessPoints.json not found in {extract_dir}")
@@ -276,7 +278,7 @@ def main():
     accessPoints = load_json(access_points_path)
     floorPlans = load_json(floor_plans_path)
     notes = load_json(notes_path)
-    images_data = init_images_data(images_json_path)  # NEW
+    images_data = init_images_data(images_json_path)
 
     floor_name_to_id = build_floor_name_to_id(floorPlans)
     ap_index = build_ap_index(accessPoints)
@@ -301,13 +303,12 @@ def main():
             skipped_count += len(image_files)
             continue
 
-        note = find_or_create_note_for_ap(ap, notes, note_index)
-        note.setdefault("imageIds", [])
-        image_ids = note["imageIds"]
-
         for img_path in image_files:
+            # Create a brand-new note for this image
+            note = create_new_note_for_ap(ap, notes, note_index)
+
             img_id = str(uuid.uuid4())
-            image_ids.append(img_id)
+            note["imageIds"] = [img_id]   # exactly one image per note
 
             dest_filename = f"image-{img_id}"
             dest_full_path = os.path.join(extract_dir, dest_filename)
@@ -321,12 +322,12 @@ def main():
 
             inserted_count += 1
 
-        print(f"   AP '{ap_name}' (floorId={floor_id}): attached {len(image_files)} image(s).")
+        print(f"   AP '{ap_name}' (floorId={floor_id}): created {len(image_files)} note(s) with images.")
 
     # Save modified JSON files
     save_json(access_points_path, accessPoints)
     save_json(notes_path, notes)
-    save_json(images_json_path, images_data)  # NEW
+    save_json(images_json_path, images_data)
 
     # Output ESX
     if args.inplace:
@@ -349,7 +350,7 @@ def main():
 
 if __name__ == "__main__":
     start_time = time.time()
-    print("** Inserting AP picture notes into Ekahau project...")
+    print("** Inserting AP picture notes into Ekahau project (Rule A: one note per image)...")
     main()
     run_time = time.time() - start_time
     print("** Time to run: %s sec" % round(run_time, 2))
