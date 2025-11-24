@@ -203,13 +203,28 @@ def create_new_note_for_ap(ap, notes_data, note_index):
         if "title" in note:
             note["title"] = ""
         note["imageIds"] = []
+
+        # --- FIX TIMESTAMP + CREATOR ---
+        now_ms = int(time.time() * 1000)
+        your_name = "Brett Melnychuk"  # change this to your name or username
+        note["created"] = now_ms
+        note["modified"] = now_ms
+        note["createdBy"] = your_name
+        note["modifiedBy"] = your_name
+        # --------------------------------
+
     else:
         note = {
             "id": new_id,
             "text": "",
             "imageIds": [],
-            "status": "ACTIVE"
+            "status": "ACTIVE",
+            "created": int(time.time() * 1000),
+            "modified": int(time.time() * 1000),
+            "createdBy": your_name,
+            "modifiedBy": your_name
         }
+
 
     notes_data.setdefault("notes", []).append(note)
     note_index[new_id] = note
