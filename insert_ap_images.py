@@ -180,17 +180,38 @@ def add_image_metadata(images_data, img_id, img_path):
 
     images_list.append(entry)
 
-# --- note creation: ONE NOTE PER IMAGE (RULE A) ------------------------------
+def set_note_audit_fields(note, author_name="Brett Melnychuk"):
+    """
+    Sets both the legacy numeric timestamps and the newer history.* fields
+    so Ekahau shows the correct creator + time in the UI.
+    """
+    now = time.time()
+    ms_since_epoch = int(now * 1000)
 
+    # Build ISO 8601 UTC with milliseconds, e.g. "2025-11-23T18:42:10.123Z"
+    seconds = int(now)
+    millis = int((now - seconds) * 1000)
+    iso_utc = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(seconds)) + f".{millis:03d}Z"
+
+    # Top-level fields
+    note["created"] = ms_since_epoch
+    note["modified"] = ms_since_epoch
+    note["createdBy"] = author_name
+    note["modifiedBy"] = author_name
+
+    # History block (this is what the UI is clearly using)
+    history = note.get("history") or {}
+    history["createdAt"] = iso_utc
+    history["modifiedAt"] = iso_utc
+    history["createdBy"] = author_name
+    history["modifiedBy"] = author_name
+    note["history"] = history
+
+
+# --- note creation: ONE NOTE PER IMAGE (RULE A) ------------------------------
 def create_new_note_for_ap(ap, notes_data, note_index):
     """
     Create a brand new note for this AP and attach it (one image per note).
-
-    We don't touch existing notes; we just append a new noteId.
-    Structure:
-      - If there is at least one existing note in notes_data["notes"],
-        we clone that as a template and wipe text/title/imageIds.
-      - Otherwise, create a minimal note with id/text/imageIds/status.
     """
     new_id = str(uuid.uuid4())
 
@@ -203,28 +224,16 @@ def create_new_note_for_ap(ap, notes_data, note_index):
         if "title" in note:
             note["title"] = ""
         note["imageIds"] = []
-
-        # --- FIX TIMESTAMP + CREATOR ---
-        now_ms = int(time.time() * 1000)
-        your_name = "Brett Melnychuk"  # change this to your name or username
-        note["created"] = now_ms
-        note["modified"] = now_ms
-        note["createdBy"] = your_name
-        note["modifiedBy"] = your_name
-        # --------------------------------
-
     else:
         note = {
             "id": new_id,
             "text": "",
             "imageIds": [],
-            "status": "ACTIVE",
-            "created": int(time.time() * 1000),
-            "modified": int(time.time() * 1000),
-            "createdBy": your_name,
-            "modifiedBy": your_name
+            "status": "CREATED"
         }
 
+    # 🔧 Set correct timestamps + user (this fixes your issue)
+    set_note_audit_fields(note, author_name="Brett Melnychuk")  # or your actual name / username
 
     notes_data.setdefault("notes", []).append(note)
     note_index[new_id] = note
@@ -236,6 +245,7 @@ def create_new_note_for_ap(ap, notes_data, note_index):
     note_ids.append(new_id)
 
     return note
+
 
 # --- main --------------------------------------------------------------------
 
