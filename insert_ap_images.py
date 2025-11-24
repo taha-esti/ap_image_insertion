@@ -226,19 +226,30 @@ def create_new_note_for_ap(ap, notes_data, note_index):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Insert AP note images back into an Ekahau .esx project "
-                    "from an AP-Images folder (Rule A: one note per image)."
+        description=(
+            "Insert AP note images back into an Ekahau .esx project from an "
+            "AP-Images folder (Rule A: one note per image).\n\n"
+            "Usage:\n"
+            "  python insert_ap_images.py SRC_ESX DEST_ESX IMAGES_DIR\n"
+            "Example:\n"
+            "  python insert_ap_images.py project.esx project_with_images.esx AP-Images"
+        )
     )
-    parser.add_argument("file", metavar="esx_file", help="Ekahau project file (.esx)")
+    # Positional args: source ESX, destination ESX, images directory
     parser.add_argument(
-        "--images-dir",
-        default="AP-Images",
-        help="Root directory where AP images are stored (default: AP-Images)",
+        "src_esx",
+        metavar="SRC_ESX",
+        help="Source Ekahau project file (.esx) to read from",
     )
     parser.add_argument(
-        "--inplace",
-        action="store_true",
-        help="Overwrite the original .esx file (also creates a .bak backup).",
+        "dst_esx",
+        metavar="DEST_ESX",
+        help="Destination Ekahau project file (.esx) to write (with inserted images)",
+    )
+    parser.add_argument(
+        "images_dir",
+        metavar="IMAGES_DIR",
+        help="Root directory where AP images are stored (Format A: AP-Images/<Floor>/<AP>.png)",
     )
     parser.add_argument(
         "--keep-temp",
@@ -248,19 +259,21 @@ def main():
 
     args = parser.parse_args()
 
-    esx_path = os.path.abspath(args.file)
-    project_stem = pathlib.PurePath(esx_path).stem
+    # Paths
+    esx_src_path = os.path.abspath(args.src_esx)
+    output_esx = os.path.abspath(args.dst_esx)
+    project_stem = pathlib.PurePath(esx_src_path).stem
     extract_dir = os.path.abspath(project_stem)
     images_root = os.path.abspath(args.images_dir)
 
-    if not os.path.isfile(esx_path):
-        raise FileNotFoundError(f"ESX file not found: {esx_path}")
+    if not os.path.isfile(esx_src_path):
+        raise FileNotFoundError(f"ESX file not found: {esx_src_path}")
 
-    print(f"** Extracting Ekahau project: {esx_path}")
+    print(f"** Extracting Ekahau project: {esx_src_path}")
     if os.path.exists(extract_dir):
         print(f"   Temporary project directory '{extract_dir}' already exists, reusing it.")
     else:
-        extract_project(esx_path, extract_dir)
+        extract_project(esx_src_path, extract_dir)
 
     # JSON paths
     access_points_path = os.path.join(extract_dir, "accessPoints.json")
@@ -329,15 +342,7 @@ def main():
     save_json(notes_path, notes)
     save_json(images_json_path, images_data)
 
-    # Output ESX
-    if args.inplace:
-        backup_path = esx_path + ".bak"
-        print(f"** Creating backup of original project: {backup_path}")
-        shutil.copy2(esx_path, backup_path)
-        output_esx = esx_path
-    else:
-        output_esx = os.path.splitext(esx_path)[0] + "_with_images.esx"
-
+    # Repack into the destination ESX provided on the command line
     print(f"** Repacking project into: {output_esx}")
     repack_project(extract_dir, output_esx)
 
@@ -346,6 +351,7 @@ def main():
         shutil.rmtree(extract_dir, ignore_errors=True)
 
     print(f"** Done. Inserted {inserted_count} image(s), skipped {skipped_count}.")
+
 
 
 if __name__ == "__main__":
