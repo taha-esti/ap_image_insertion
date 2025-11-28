@@ -17,8 +17,7 @@ For each AP on that floor:
 Existing notes for the AP are left untouched.
 
 Usage:
-    python insert_ap_images.py project.esx
-    python insert_ap_images.py project.esx --images-dir AP-Images --inplace
+    python insert_ap_images.py SRC_ESX DEST_ESX IMAGES_DIR
 """
 
 import argparse
