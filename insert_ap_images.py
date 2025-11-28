@@ -18,6 +18,9 @@ Existing notes for the AP are left untouched.
 
 Usage:
     python insert_ap_images.py SRC_ESX DEST_ESX IMAGES_DIR
+
+You may pass the same path for SRC_ESX and DEST_ESX to overwrite
+the original project file (keep a backup if you care).
 """
 
 import argparse
@@ -30,17 +33,21 @@ import os
 import uuid
 import re
 
+
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
+
 def extract_project(esx_file, extract_dir):
     with zipfile.ZipFile(esx_file, "r") as zf:
         zf.extractall(extract_dir)
+
 
 def repack_project(extract_dir, output_esx):
     with zipfile.ZipFile(output_esx, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -49,6 +56,7 @@ def repack_project(extract_dir, output_esx):
                 full_path = os.path.join(root, name)
                 rel_path = os.path.relpath(full_path, extract_dir)
                 zf.write(full_path, rel_path)
+
 
 def parse_ap_name_from_filename(filename):
     """
@@ -62,6 +70,7 @@ def parse_ap_name_from_filename(filename):
         return m.group(1)
     return base
 
+
 def build_floor_name_to_id(floorPlans):
     mapping = {}
     for f in floorPlans.get("floorPlans", []):
@@ -69,6 +78,7 @@ def build_floor_name_to_id(floorPlans):
         if name:
             mapping[name] = f.get("id")
     return mapping
+
 
 def build_ap_index(accessPoints):
     """
@@ -83,6 +93,7 @@ def build_ap_index(accessPoints):
             index[(floor_id, name)] = ap
     return index
 
+
 def build_note_index(notes):
     """
     noteId -> note dict
@@ -94,13 +105,18 @@ def build_note_index(notes):
             idx[nid] = n
     return idx
 
+
 def collect_images(images_root, floor_name_to_id):
     """
     Return:
-       { (floorPlanId, apName): [list of full image paths (sorted)] }
+       mapping: { (floorPlanId, apName): [list of full image paths (sorted)] }
+       skipped_images: [list of full image paths that cannot be matched to any floor]
+
     Only floors that match floorPlans.json names are used.
     """
     mapping = {}
+    skipped_images = []
+
     if not os.path.isdir(images_root):
         raise FileNotFoundError(f"Images directory not found: {images_root}")
 
@@ -111,7 +127,15 @@ def collect_images(images_root, floor_name_to_id):
 
         floor_id = floor_name_to_id.get(floor_name)
         if not floor_id:
-            print(f"WARNING: Floor '{floor_name}' not found in floorPlans.json, skipping.")
+            print(f"WARNING: Floor '{floor_name}' not found in floorPlans.json, skipping its images.")
+            # Record image files in unknown floors as "not inserted"
+            for fname in sorted(os.listdir(floor_path)):
+                full = os.path.join(floor_path, fname)
+                if not os.path.isfile(full):
+                    continue
+                ext = os.path.splitext(fname)[1].lower()
+                if ext in [".png", ".jpg", ".jpeg"]:
+                    skipped_images.append(full)
             continue
 
         for fname in sorted(os.listdir(floor_path)):
@@ -127,7 +151,8 @@ def collect_images(images_root, floor_name_to_id):
             key = (floor_id, ap_name)
             mapping.setdefault(key, []).append(full)
 
-    return mapping
+    return mapping, skipped_images  # NEW: return skipped_images as well
+
 
 # --- images.json helpers -----------------------------------------------------
 
@@ -149,6 +174,7 @@ def init_images_data(images_path):
     else:
         data = {"images": []}
     return data
+
 
 def add_image_metadata(images_data, img_id, img_path):
     """
@@ -178,6 +204,7 @@ def add_image_metadata(images_data, img_id, img_path):
     entry["status"] = "CREATED"
 
     images_list.append(entry)
+
 
 def set_note_audit_fields(note, author_name="Brett Melnychuk"):
     """
@@ -231,8 +258,8 @@ def create_new_note_for_ap(ap, notes_data, note_index):
             "status": "CREATED"
         }
 
-    # 🔧 Set correct timestamps + user (this fixes your issue)
-    set_note_audit_fields(note, author_name="Brett Melnychuk")  # or your actual name / username
+    # Set correct timestamps + user
+    set_note_audit_fields(note, author_name="Brett Melnychuk")
 
     notes_data.setdefault("notes", []).append(note)
     note_index[new_id] = note
@@ -256,7 +283,9 @@ def main():
             "Usage:\n"
             "  python insert_ap_images.py SRC_ESX DEST_ESX IMAGES_DIR\n"
             "Example:\n"
-            "  python insert_ap_images.py project.esx project_with_images.esx AP-Images"
+            "  python insert_ap_images.py project.esx project_with_images.esx AP-Images\n\n"
+            "You may pass the same path for SRC_ESX and DEST_ESX to overwrite "
+            "the original project file (keep a backup)."
         )
     )
     # Positional args: source ESX, destination ESX, images directory
@@ -318,26 +347,34 @@ def main():
     images_data = init_images_data(images_json_path)
 
     floor_name_to_id = build_floor_name_to_id(floorPlans)
+    # NEW: reverse lookup for pretty printing
+    floor_id_to_name = {v: k for k, v in floor_name_to_id.items()}  # NEW
+
     ap_index = build_ap_index(accessPoints)
     note_index = build_note_index(notes)
 
     print(f"** Scanning images in: {images_root}")
-    ap_images = collect_images(images_root, floor_name_to_id)
+    ap_images, skipped_images_from_floors = collect_images(images_root, floor_name_to_id)  # NEW
 
-    if not ap_images:
+    if not ap_images and not skipped_images_from_floors:
         print("No AP images found to insert. Exiting.")
         return
 
-    print(f"** Found {len(ap_images)} APs with images.")
+    print(f"** Found {len(ap_images)} APs with images in known floors.")
 
     inserted_count = 0
     skipped_count = 0
+
+    # NEW: Track detailed info
+    not_inserted_images = list(skipped_images_from_floors)  # images that couldn't be matched to any floor
+    ap_keys_with_images_inserted = set()
 
     for (floor_id, ap_name), image_files in ap_images.items():
         ap = ap_index.get((floor_id, ap_name))
         if not ap:
             print(f"WARNING: No AP named '{ap_name}' on floor id '{floor_id}', skipping its images.")
             skipped_count += len(image_files)
+            not_inserted_images.extend(image_files)  # NEW: record these images as not inserted
             continue
 
         for img_path in image_files:
@@ -359,6 +396,7 @@ def main():
 
             inserted_count += 1
 
+        ap_keys_with_images_inserted.add((floor_id, ap_name))  # NEW
         print(f"   AP '{ap_name}' (floorId={floor_id}): created {len(image_files)} note(s) with images.")
 
     # Save modified JSON files
@@ -374,8 +412,37 @@ def main():
         print(f"** Cleaning up temporary directory: {extract_dir}")
         shutil.rmtree(extract_dir, ignore_errors=True)
 
-    print(f"** Done. Inserted {inserted_count} image(s), skipped {skipped_count}.")
+    print(f"** Done. Inserted {inserted_count} image(s), skipped {skipped_count} due to missing APs.")
 
+    # NEW: Report images that were not inserted
+    if not_inserted_images:
+        print(f"\n** Images that were NOT inserted ({len(not_inserted_images)}):")
+        for img in sorted(set(not_inserted_images)):
+            rel = os.path.relpath(img, images_root)
+            print(f"   {rel}")
+    else:
+        print("\n** All image files in valid floors were successfully inserted.")
+
+    # NEW: Report APs in Ekahau that did not get any images
+    aps_without_images = []
+    for ap in accessPoints.get("accessPoints", []):
+        name = ap.get("name")
+        loc = ap.get("location", {}) or {}
+        floor_id = loc.get("floorPlanId")
+        if not name or not floor_id:
+            # Skip APs that are not placed on a floor or have no name
+            continue
+        key = (floor_id, name)
+        if key not in ap_keys_with_images_inserted:
+            aps_without_images.append((floor_id, name))
+
+    print(f"\n** APs in Ekahau that did NOT receive any images ({len(aps_without_images)}):")
+    if aps_without_images:
+        for floor_id, ap_name in sorted(aps_without_images, key=lambda x: (x[0], x[1])):
+            floor_label = floor_id_to_name.get(floor_id, floor_id)
+            print(f"   Floor '{floor_label}' AP '{ap_name}'")
+    else:
+        print("   Every placed AP (with floorPlanId) received at least one image.")
 
 
 if __name__ == "__main__":
